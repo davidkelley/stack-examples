@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  Stage:
+    Type: String
+    Description: API Gateway Stage
+    Default: test
+
+Resources:
+
+  TemperatureTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: city
+          AttributeType: S
+        - AttributeName: time
+          AttributeType: N
+      KeySchema:
+        - AttributeName: city
+          KeyType: HASH
+        - AttributeName: time
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  ScheduledFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.schedule
+      Runtime: nodejs6.10
+      CodeUri: ./
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !GetAtt TemperatureTable.Arn
+      Events:
+        Timer:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+      Environment:
+        Variables:
+          TABLE: !Ref TemperatureTable
+
+  ScheduledFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ScheduledFunction}"
+      RetentionInDays: 1
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: example
+      StageName: !Ref Stage
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title:
+            Ref: AWS::StackName
+        schemes:
+          - https
+        x-amazon-apigateway-request-validators:
+          all:
+            validateRequestBody: true
+            validateRequestParameters: true
+          body-only:
+            validateRequestBody: true
+            validateRequestParameters: false
+          params-only:
+            validateRequestBody: false
+            validateRequestParameters: true
+        definitions:
+          Temperature:
+            type: object
+            required:
+              - city
+              - time
+              - temp
+            properties:
+              city:
+                type: string
+              time:
+                type: number
+              temp:
+                type: number
+          Temperatures:
+            type: array
+            items:
+              $ref: "#/definitions/Temperature"
+          Empty:
+            type: object
+          Error:
+            type: object
+            properties:
+              message:
+                type: string
+              type:
+                type: string
+              __raw:
+                type: object
+        paths:
+          /:
+            get:
+              produces:
+                - application/json
+              consumes:
+                - application/json
+              parameters:
+                - name: city
+                  in: query
+                  required: true
+                  type: string
+                  pattern: "^[a-zA-Z]+$"
+                - name: after
+                  in: query
+                  required: true
+                  type: number
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Temperatures"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Content-Type:
+                      type: "string"
+                "400":
+                  schema:
+                    $ref: "#/definitions/Error"
+                "500":
+                  schema:
+                    $ref: "#/definitions/Error"
+              x-amazon-apigateway-integration:
+                type: aws
+                credentials: !GetAtt ApiGatewayExecutionRole.Arn
+                httpMethod: POST
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query"
+                requestTemplates:
+                  application/json: !Sub |
+                    #set ($city = $input.params('city'))
+                    #set ($after = $input.params('after'))
+                    {
+                      "TableName": "${TemperatureTable}",
+                      "KeyConditionExpression": "#c = :c AND #t >= :t",
+                      "ExpressionAttributeValues": {
+                        ":c": {
+                          "S": "$city"
+                        },
+                        ":t": {
+                          "N": "$after"
+                        }
+                      },
+                      "ExpressionAttributeNames": {
+                        "#c": "city",
+                        "#t": "time"
+                      }
+                    }
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseTemplates:
+                      application/x-amz-json-1.0: |
+                        [
+                          #foreach($item in $input.path('$.Items'))
+                          {
+                            "city": "$item.city.S",
+                            "temp": $item.temp.N,
+                            "time": $item.time.N
+                          }#if($foreach.hasNext),#end
+                          #end
+                        ]
+                  4\d{2}:
+                    statusCode: "400"
+                    responseTemplates:
+                      application/x-amz-json-1.0: |
+                        {
+                          "type": "BadRequest",
+                          "message": "Your request could not be processed.",
+                          "__raw": $input.body
+                        }
+                  5\d{2}:
+                    statusCode: "500"
+                    responseTemplates:
+                      application/x-amz-json-1.0: |
+                        {
+                          "type": "InternalServerError",
+                          "message": "There was an internal error",
+                          "__raw": $input.body
+                        }
+
+  ApiGatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+  ApiGatewayExecutionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: APIPermissions
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !GetAtt TemperatureTable.Arn
+      Roles:
+        - Ref: ApiGatewayExecutionRole
+
+Outputs:
+
+  URL:
+    Description: URL for the service
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}"

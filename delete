@@ -1,0 +1,1 @@
+aws --region eu-west-1 --profile noths-dev cloudformation delete-stack --stack-name $1

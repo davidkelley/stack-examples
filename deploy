@@ -1,0 +1,1 @@
+aws --region eu-west-1 --profile noths-dev cloudformation deploy --capabilities CAPABILITY_IAM --template-file ./integrations/$1/packaged.yml --stack-name $1

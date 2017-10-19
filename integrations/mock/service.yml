@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  Stage:
+    Type: String
+    Description: API Gateway Stage
+    Default: test
+
+Resources:
+
+  CDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        WebACLId: !GetAtt WAF.Outputs.wafWebACL
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Origins:
+          - DomainName: !Sub "${ApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+            OriginPath: !Sub "/${Stage}"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+            Id: Mock
+        DefaultCacheBehavior:
+          Compress: true
+          TargetOriginId: Mock
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: example
+      StageName: !Ref Stage
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title:
+            Ref: AWS::StackName
+        schemes:
+          - https
+        definitions:
+          Greeting:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+          Empty:
+            type: object
+          Error:
+            type: object
+            properties:
+              message:
+                type: string
+              type:
+                type: string
+              __raw:
+                type: object
+        paths:
+          /:
+            get:
+              consumes:
+                - text/plain
+              produces:
+                - text/plain
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Greeting"
+                  headers:
+                    Content-Type:
+                      type: string
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Content-Type: "'text/plain'"
+                    responseTemplates:
+                      text/plain: |
+                        "Greetings, puny humans!"
+                passthroughBehavior: never
+                requestTemplates:
+                  application/json: |
+                    {
+                      "statusCode": 200
+                    }
+                type: mock
+
+  ApiGatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+  WAF:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./waf.yml
+      Parameters:
+        stackScope: Global
+
+Outputs:
+
+  URL:
+    Description: CDN URL for the service
+    Value: !GetAtt CDN.DomainName
+
+  Gateway:
+    Description: Gateway URL for the service
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}"

@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  Stage:
+    Type: String
+    Description: API Gateway Stage
+    Default: test
+
+Resources:
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs6.10
+      CodeUri: ./
+
+  ApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: 1
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: example
+      StageName: !Ref Stage
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title:
+            Ref: AWS::StackName
+        schemes:
+          - https
+        x-amazon-apigateway-request-validators:
+          all:
+            validateRequestBody: true
+            validateRequestParameters: true
+          body-only:
+            validateRequestBody: true
+            validateRequestParameters: false
+          params-only:
+            validateRequestBody: false
+            validateRequestParameters: true
+        definitions:
+          Empty:
+            type: object
+          Error:
+            type: object
+            properties:
+              message:
+                type: string
+              type:
+                type: string
+              __raw:
+                type: object
+        paths:
+          /:
+            get:
+              produces:
+                - application/json
+              consumes:
+                - application/json
+              parameters:
+                - name: name
+                  in: query
+                  required: true
+                  type: string
+                  pattern: "^[a-zA-Z]+$"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Content-Type:
+                      type: "string"
+                "400":
+                  schema:
+                    $ref: "#/definitions/Error"
+                "500":
+                  schema:
+                    $ref: "#/definitions/Error"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                credentials:
+                  Fn::Sub: ${ApiGatewayExecutionRole.Arn}
+                uri:
+                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers: "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                      method.response.header.Content-Type: "integration.response.header.Content-Type"
+                passthroughBehavior: when_no_match
+
+  ApiGatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+  ApiGatewayExecutionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: APIPermissions
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:*
+            Resource: !GetAtt ApiFunction.Arn
+      Roles:
+        - Ref: ApiGatewayExecutionRole
+
+Outputs:
+
+  URL:
+    Description: URL for the service
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}"

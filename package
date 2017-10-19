@@ -1,0 +1,1 @@
+aws --region eu-west-1 --profile noths-dev cloudformation package --template-file ./integrations/$1/service.yml --s3-bucket sam-demos --output-template-file ./integrations/$1/packaged.yml
