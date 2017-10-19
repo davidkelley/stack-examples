@@ -6,6 +6,7 @@ exports.handler = (event, context, cb) => {
     statusCode: 200,
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'max-age=500'
     },
     body: JSON.stringify({
       hello: name,

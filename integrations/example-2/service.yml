@@ -82,6 +82,8 @@ Resources:
                       type: "string"
                     Content-Type:
                       type: "string"
+                    Cache-Control:
+                      type: "string"
                 "400":
                   schema:
                     $ref: "#/definitions/Error"
@@ -102,6 +104,7 @@ Resources:
                       method.response.header.Access-Control-Allow-Headers: "'*'"
                       method.response.header.Access-Control-Allow-Origin: "'*'"
                       method.response.header.Content-Type: "integration.response.header.Content-Type"
+                      method.response.header.Cache-Control: "integration.response.header.Cache-Control"
                 passthroughBehavior: when_no_match
 
   ApiGatewayExecutionRole:
