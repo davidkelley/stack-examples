@@ -1,0 +1,24 @@
+#set($allParams = $input.params())
+{
+  "hello": "$input.path('$.hello.my')",
+  "size": "$input.path('$.hello.counts').size()",
+  "cities": [
+    #foreach($city in $input.path('$.cities..name'))
+    "$city"#if($foreach.hasNext),#end
+    #end
+  ],
+  "params" : {
+    #foreach($type in $allParams.keySet())
+    #set($params = $allParams.get($type))
+    "$type" : {
+      #foreach($paramName in $params.keySet())
+      "$paramName" : "$util.escapeJavaScript($params.get($paramName)).replaceAll("\\'","'")"
+      #if($foreach.hasNext),#end
+      #end
+    }
+    #if($foreach.hasNext),#end
+    #end
+  },
+  "raw_cities": $input.json('$.cities'),
+  "stage": "$stageVariables.temp"
+}

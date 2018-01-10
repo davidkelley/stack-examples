@@ -1,0 +1,5 @@
+{
+  "Data": "$util.base64Encode("{ ""id"" : ""$input.params('id')"" }")",
+  "PartitionKey": "$input.params('id')",
+  "StreamName": "${ClickStream}"
+}

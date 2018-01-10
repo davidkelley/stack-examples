@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  Stage:
+    Type: String
+    Description: API Gateway Stage
+    Default: test
+
+Conditions:
+
+  IsMasterRegion: !Equals [ !Ref AWS::Region, !ImportValue MasterRegion ]
+
+  IsSlaveRegion: !Not [ !Equals [ !Ref AWS::Region, !ImportValue MasterRegion ] ]
+
+Resources:
+
+  ClickStream:
+    Condition: IsMasterRegion
+    Type: AWS::Kinesis::Stream
+    Properties:
+      RetentionPeriodHours: 24
+      ShardCount: 1
+
+  ApiGateway:
+    Condition: IsMasterRegion
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: example
+      StageName: !Ref Stage
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title:
+            Ref: AWS::StackName
+        schemes:
+          - https
+        definitions:
+          Empty:
+            type: object
+          Error:
+            type: object
+            properties:
+              message:
+                type: string
+              type:
+                type: string
+              __raw:
+                type: object
+        paths:
+          /:
+            get:
+              consumes:
+                - application/json
+              produces:
+                - application/json
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Content-Type:
+                      type: string
+              parameters:
+                - name: id
+                  in: query
+                  type: number
+                  required: true
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: POST
+                credentials: !GetAtt ApiGatewayExecutionRole.Arn
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:kinesis:action/PutRecord
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Content-Type: "'application/json'"
+                    responseTemplates:
+                      application/json: |
+                        {}
+                passthroughBehavior: when_no_match
+                requestTemplates:
+                  application/json: !Sub |
+                    {
+                      "Data": "$util.base64Encode("{ ""id"" : ""$input.params('id')"" }")",
+                      "PartitionKey": "$input.params('id')",
+                      "StreamName": "${ClickStream}"
+                    }
+
+  ApiGatewayExecutionRole:
+    Condition: IsMasterRegion
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+  ApiGatewayExecutionPolicy:
+    Condition: IsMasterRegion
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: APIPermissions
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:PutRecord
+            Resource: !GetAtt ClickStream.Arn
+      Roles:
+        - Ref: ApiGatewayExecutionRole
+
+  MasterRegion:
+    Conditions: IsSlaveRegion
+    Type: Custom::GlobalImports
+    Properties:
+      ServiceToken: !ImportValue GlobalImportValue
+      SourceRegion: !ImportValue MasterRegion
+
+  KinesisAnalytics:
+    Type: "AWS::KinesisAnalytics::Application"
+    Properties:
+      # ApplicationCode: "Example Application Code"
+      Inputs:
+        - NamePrefix: exampleNamePrefix
+          InputSchema:
+            RecordColumns:
+             - Name: "example"
+               SqlType: "VARCHAR(16)"
+               Mapping: "$.example"
+            RecordFormat:
+              RecordFormatType: "JSON"
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: "$"
+          KinesisStreamsInput:
+            ResourceARN: !If [IsMasterRegion, !GetAtt ClickStream.Arn, !GetAtt MasterRegion.ClickStreamArn]
+            RoleARN: !GetAtt KinesisAnalyticsRole.Arn
+
+  KinesisAnalyticsOutput:
+    Type: AWS::KinesisAnalytics::ApplicationOutput
+    DependsOn: KinesisAnalytics
+    Properties:
+      ApplicationName: !Ref KinesisAnalytics
+      Output:
+        Name: exampleOutput
+        DestinationSchema:
+          RecordFormatType: "CSV"
+        KinesisFirehoseOutput:
+          ResourceARN: !Sub "arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${OutputStream}"
+          RoleARN: !GetAtt KinesisAnalyticsRole.Arn
+
+  KinesisAnalyticsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kinesisanalytics.amazonaws.com
+            Action: sts:AssumeRole
+
+  KinesisAnalyticsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: StreamPermissions
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:DescribeStream
+              - kinesis:GetShardIterator
+              - kinesis:GetRecords
+            Resource:
+              - !If [IsMasterRegion, !GetAtt ClickStream.Arn, !GetAtt MasterRegion.ClickStreamArn]
+          - Effect: Allow
+            Action:
+              - firehose:DescribeDeliveryStream
+              - firehose:PutRecord
+              - firehose:PutRecordBatch
+            Resource:
+              - !Sub "arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${OutputStream}"
+      Roles:
+        - Ref: KinesisAnalyticsRole
+
+  OutputStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt Output.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 10
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Ref Stage
+        RoleARN: !GetAtt OutputStreamRole.Arn
+
+  OutputStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+
+  OutputStreamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: StreamPermissions
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !GetAtt Output.Arn
+              - !Sub "${Output.Arn}/*"
+
+  Output:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+Outputs:
+
+  ClickStream:
+    Value: !Ref ClickStream
+    Description: Name of the Kinesis Click Stream
+    Export:
+      Name: ClickStream
+
+  ClickStreamArn:
+    Value: !GetAtt ClickStream.Arn
+    Description: ARN of the Kinesis Click Stream
+    Export:
+      Name: ClickStreamArn
+
+  Gateway:
+    Description: Gateway URL for the service
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}"
